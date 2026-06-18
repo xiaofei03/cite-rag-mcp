@@ -29,26 +29,68 @@ The server supports four workflow modes through the `run_reference_workflow` too
 - Python 3.11+
 - Zotero Desktop running locally
 - Better BibTeX for Zotero
-- Pandoc on `PATH` for Word export
+- Pandoc on `PATH` for Word export, or macOS/Windows where the installer can download a local Pandoc copy
 
-Install Python dependencies:
+Zotero must expose both:
+
+- Zotero Connector at `http://127.0.0.1:23119/connector/ping`
+- Zotero Local API at `http://127.0.0.1:23119/api/users/0/items`
+
+## Quick Install for Codex
+
+From the repository root:
+
+```bash
+python3 scripts/install_codex_mcp.py
+python3 scripts/healthcheck.py
+```
+
+On Windows, use Python 3.11+:
 
 ```powershell
-python -m pip install -r requirements.txt
+py -3.11 scripts\install_codex_mcp.py
+py -3.11 scripts\healthcheck.py
 ```
+
+The installer:
+
+- creates a local `.venv`
+- installs Python dependencies
+- uses an existing `pandoc` when available
+- downloads a local macOS or Windows Pandoc binary when needed
+- writes the `cite-rag-mcp` entry into `~/.codex/config.toml`
+
+Restart Codex after installation so it can load the MCP server.
 
 ## Codex MCP Configuration
 
-Example `config.toml` entry:
+If you prefer manual setup, add a `config.toml` entry like this:
 
 ```toml
 [mcp_servers.cite-rag-mcp]
-command = "python"
-args = ["C:\\path\\to\\cite-rag-mcp\\server.py"]
+command = "/path/to/cite-rag-mcp/.venv/bin/python"
+args = ["/path/to/cite-rag-mcp/server.py"]
 startup_timeout_sec = 20
 ```
 
-Adjust the path for your local clone.
+If Pandoc is installed inside the repository, also add its `bin` directory to the server environment:
+
+```toml
+[mcp_servers.cite-rag-mcp.env]
+PATH = "/path/to/cite-rag-mcp/tools/pandoc-3.10/pandoc-3.10-arm64/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+```
+
+Windows example:
+
+```toml
+[mcp_servers.cite-rag-mcp]
+command = "C:\\path\\to\\cite-rag-mcp\\.venv\\Scripts\\python.exe"
+args = ["C:\\path\\to\\cite-rag-mcp\\server.py"]
+startup_timeout_sec = 20
+
+[mcp_servers.cite-rag-mcp.env]
+PATH = "C:\\path\\to\\cite-rag-mcp\\tools\\pandoc-3.10\\pandoc-3.10\\bin;C:\\Windows\\System32;C:\\Windows"
+```
 
 ## Main Tool
 
