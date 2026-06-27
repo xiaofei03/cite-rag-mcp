@@ -879,6 +879,29 @@ async def import_doi_metadata_to_selected_collection(dois: list[str]) -> dict:
 
 
 @mcp.tool(
+    name="import_manual_metadata_to_selected_collection",
+    description=(
+        "Import user-verified or Chinese-language metadata into the currently selected Zotero collection "
+        "without requiring a downloaded PDF or DOI. Use this for CNKI/Chinese journal items, metadata-only "
+        "references, or sources whose DOI metadata cannot be resolved. The tool writes Zotero items, verifies "
+        "collection read-back, and returns Better BibTeX citekeys for live-citation Word export."
+    ),
+)
+async def import_manual_metadata_to_selected_collection(
+    metadata_items: list[dict],
+    metadata_source: str = "manual_metadata",
+    fulltext_status: str = "metadata_only",
+) -> dict:
+    return (
+        await zotero_service.import_manual_metadata_to_selected_collection(
+            metadata_items,
+            metadata_source=metadata_source,
+            fulltext_status=fulltext_status,
+        )
+    ).to_dict()
+
+
+@mcp.tool(
     name="import_dois_and_get_citekeys",
     description=(
         "Backward-compatible alias for import_doi_metadata_to_selected_collection. Uses only the local "
@@ -940,6 +963,7 @@ async def audit_zotero_metadata_by_citekeys(
     markdown_content: str | None = None,
     year_override_csv: str | None = None,
     verify_doi_metadata: bool = True,
+    allow_metadata_only_without_doi: bool = False,
     external_concurrency: int = 4,
     use_failure_cache: bool = True,
 ) -> dict:
@@ -955,6 +979,7 @@ async def audit_zotero_metadata_by_citekeys(
         await zotero_service.audit_metadata_by_citekeys(
             _dedupe_preserve_order(resolved_citekeys),
             verify_doi_metadata=verify_doi_metadata,
+            allow_metadata_only_without_doi=allow_metadata_only_without_doi,
             formal_year_overrides=_formal_year_overrides_for_service(year_override_csv),
             external_concurrency=external_concurrency,
             use_failure_cache=use_failure_cache,

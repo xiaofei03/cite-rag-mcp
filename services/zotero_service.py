@@ -475,6 +475,7 @@ class ZoteroService:
         citekeys: list[str],
         *,
         verify_doi_metadata: bool = True,
+        allow_metadata_only_without_doi: bool = False,
         formal_year_overrides: dict[str, tuple[int, str]] | None = None,
         external_concurrency: int = 4,
         use_failure_cache: bool = True,
@@ -544,8 +545,15 @@ class ZoteroService:
             if verify_doi_metadata and doi:
                 pending_external_checks.append((record, doi))
             elif not doi:
-                record.status = "doi_missing"
-                record.action_required = "Add DOI or manually verify title/year/journal before final citation refresh."
+                if allow_metadata_only_without_doi:
+                    record.status = "metadata_only_no_doi"
+                    record.details = (
+                        "No DOI is present. The Zotero item can still generate live citation fields, "
+                        "but writing-critical use requires manual abstract or full-text verification."
+                    )
+                else:
+                    record.status = "doi_missing"
+                    record.action_required = "Add DOI or manually verify title/year/journal before final citation refresh."
 
             records.append(record)
 
@@ -849,6 +857,28 @@ class ZoteroService:
         creators, _, _, _ = self._prepare_creators_from_metadata(metadata)
         return creators
 
+    def _manual_creators_from_names(self, names: list[str]) -> list[dict[str, str]]:
+        creators: list[dict[str, str]] = []
+        for raw_name in names:
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if re.search(r"[\u4e00-\u9fff]", name):
+                creators.append({"creatorType": "author", "lastName": name, "firstName": ""})
+                continue
+            parts = name.split()
+            if len(parts) == 1:
+                creators.append({"creatorType": "author", "lastName": parts[0], "firstName": ""})
+            else:
+                creators.append(
+                    {
+                        "creatorType": "author",
+                        "lastName": parts[-1],
+                        "firstName": " ".join(parts[:-1]),
+                    }
+                )
+        return creators
+
     def _make_connector_item(self, doi: str, metadata: dict[str, Any], index: int) -> dict[str, Any]:
         clean_year = extract_four_digit_year(metadata.get("date") or metadata.get("year"))
         item = {
@@ -871,6 +901,39 @@ class ZoteroService:
             item["pages"] = str(metadata["pages"])
         if metadata.get("abstract"):
             item["abstractNote"] = str(metadata["abstract"])
+        return item
+
+    def _make_manual_connector_item(self, metadata: dict[str, Any], index: int) -> dict[str, Any]:
+        title = str(metadata.get("title") or "").strip()
+        if not title:
+            raise ZoteroImportError("中文元数据输入校验失败", f"第 {index} 条缺少 title。")
+        clean_year = extract_four_digit_year(metadata.get("date") or metadata.get("year"))
+        authors = metadata.get("authors") or metadata.get("creators") or []
+        if isinstance(authors, str):
+            authors = [part.strip() for part in re.split(r"[;,；，、|/]+", authors) if part.strip()]
+        if not isinstance(authors, list):
+            authors = []
+        item = {
+            "id": f"codex-manual-{index}-{uuid.uuid4().hex[:10]}",
+            "itemType": str(metadata.get("itemType") or metadata.get("item_type") or "journalArticle"),
+            "title": title,
+            "creators": self._manual_creators_from_names([str(author) for author in authors]),
+            "publicationTitle": str(metadata.get("journal") or metadata.get("publicationTitle") or ""),
+            "date": str(clean_year or metadata.get("date") or metadata.get("year") or ""),
+            "DOI": normalize_doi(str(metadata.get("doi") or metadata.get("DOI") or "")),
+            "url": str(metadata.get("url") or ""),
+        }
+        optional_fields = {
+            "ISSN": metadata.get("issn") or metadata.get("ISSN"),
+            "volume": metadata.get("volume"),
+            "issue": metadata.get("issue"),
+            "pages": metadata.get("pages"),
+            "abstractNote": metadata.get("abstract") or metadata.get("abstractNote"),
+            "language": metadata.get("language") or "zh-CN",
+        }
+        for key, value in optional_fields.items():
+            if value is not None and str(value).strip():
+                item[key] = str(value).strip()
         return item
 
     async def _fetch_metadata_or_raise(self, doi: str) -> dict[str, Any]:
@@ -907,6 +970,179 @@ class ZoteroService:
             await self._post_connector_json("/connector/saveItems", payload)
         except Exception as exc:
             raise ZoteroImportError("本地 Connector 写入失败", str(exc)) from exc
+
+    async def _save_manual_items_to_selected_collection(
+        self,
+        target: SelectedTarget,
+        metadata_rows: list[dict[str, Any]],
+    ) -> None:
+        payload = {
+            "sessionID": f"codex-manual-metadata-{uuid.uuid4().hex}",
+            "target": {
+                "libraryID": target.library_id,
+                "collectionKey": target.collection_key,
+            },
+            "items": [
+                self._make_manual_connector_item(metadata, index)
+                for index, metadata in enumerate(metadata_rows, start=1)
+            ],
+        }
+        try:
+            await self._post_connector_json("/connector/saveItems", payload)
+        except Exception as exc:
+            raise ZoteroImportError("本地 Connector 写入失败", str(exc)) from exc
+
+    def _normalized_title_for_lookup(self, value: str | None) -> str:
+        return re.sub(r"\s+", "", str(value or "")).casefold()
+
+    async def _collection_matches_by_title(
+        self,
+        collection_key: str,
+        titles: list[str],
+    ) -> dict[str, list[ZoteroMatch]]:
+        title_map = {self._normalized_title_for_lookup(title): title for title in titles if title}
+        grouped = {title: [] for title in title_map.values()}
+        if not title_map:
+            return grouped
+        for row in await self._collection_item_rows(collection_key):
+            data = row.get("data", {})
+            normalized_title = self._normalized_title_for_lookup(data.get("title"))
+            original_title = title_map.get(normalized_title)
+            if not original_title:
+                continue
+            creators, hygiene_status, normalized_creators, hygiene_warnings = self._normalize_creators_for_hygiene(
+                data.get("creators", [])
+            )
+            grouped[original_title].append(
+                ZoteroMatch(
+                    doi=normalize_doi(data.get("DOI", "")) if data.get("DOI") else "",
+                    item_key=row.get("key") or data.get("key") or "",
+                    title=data.get("title"),
+                    item_type=data.get("itemType"),
+                    issn=data.get("ISSN"),
+                    abstract_note=data.get("abstractNote"),
+                    collections=data.get("collections", []),
+                    metadata_hygiene_status=hygiene_status,
+                    normalized_creators=normalized_creators,
+                    hygiene_warnings=hygiene_warnings,
+                )
+            )
+        return grouped
+
+    async def import_manual_metadata_to_selected_collection(
+        self,
+        metadata_items: list[dict[str, Any]],
+        *,
+        metadata_source: str = "manual_metadata",
+        fulltext_status: str = "metadata_only",
+    ) -> MetadataImportReport:
+        if not metadata_items:
+            raise ZoteroImportError("中文元数据输入校验失败", "Provide at least one metadata item.")
+
+        clean_items: list[dict[str, Any]] = []
+        for index, item in enumerate(metadata_items, start=1):
+            title = str(item.get("title") or "").strip()
+            if not title:
+                raise ZoteroImportError("中文元数据输入校验失败", f"第 {index} 条缺少 title。")
+            clean_items.append(dict(item))
+
+        await self._ping_connector()
+        selected_target = await self.get_selected_target()
+        if selected_target.attach_to_library_root or not selected_target.collection_name:
+            raise ZoteroImportError("选中集合获取失败", "Zotero 当前未选中具体集合。")
+        if not selected_target.collection_key:
+            raise ZoteroImportError(
+                "选中集合获取失败",
+                f"无法将集合 {selected_target.collection_name} 映射为本地 API collection key。",
+            )
+        if not selected_target.editable:
+            raise ZoteroImportError("选中集合获取失败", "当前 Zotero 选中集合不可写。")
+
+        titles = [str(item.get("title") or "").strip() for item in clean_items]
+        before_matches = await self._collection_matches_by_title(selected_target.collection_key, titles)
+        before_keys_by_title = {
+            title: {match.item_key for match in matches if match.item_key}
+            for title, matches in before_matches.items()
+        }
+        items_to_write = [
+            item
+            for item in clean_items
+            if not before_matches.get(str(item.get("title") or "").strip())
+        ]
+
+        if items_to_write:
+            await self._save_manual_items_to_selected_collection(selected_target, items_to_write)
+
+        after_matches = await self._collection_matches_by_title(selected_target.collection_key, titles)
+        results: list[ImportedMetadataRecord] = []
+        hygiene_warnings: list[str] = []
+        reused_count = 0
+
+        for item in clean_items:
+            title = str(item.get("title") or "").strip()
+            after_rows = after_matches.get(title, [])
+            if not after_rows:
+                raise ZoteroImportError(
+                    "集合回读失败",
+                    f"{title}: 写入后未在集合 {selected_target.collection_name}({selected_target.collection_key}) 中找到条目。",
+                )
+            before_keys = before_keys_by_title.get(title, set())
+            new_rows = [match for match in after_rows if match.item_key not in before_keys]
+            chosen = new_rows[0] if new_rows else after_rows[0]
+            if not new_rows:
+                reused_count += 1
+            citekey_result = await self.citekey_service.export_item_citekey_async(
+                chosen.item_key,
+                doi=chosen.doi or item.get("doi") or item.get("DOI"),
+                title=title,
+            )
+            if citekey_result.status != "ok" or not citekey_result.citekey:
+                raise ZoteroImportError(
+                    "BBT 提取失败",
+                    f"{title} / {chosen.item_key}: {citekey_result.details}",
+                )
+
+            if fulltext_status == "metadata_only":
+                hygiene_warnings.append(
+                    f"{chosen.item_key}: metadata-only item. It can generate live citation fields, but writing-critical use still requires abstract or full-text verification."
+                )
+            hygiene_warnings.extend(chosen.hygiene_warnings)
+            results.append(
+                ImportedMetadataRecord(
+                    doi=chosen.doi or normalize_doi(str(item.get("doi") or item.get("DOI") or "")),
+                    title=chosen.title or title,
+                    item_key=chosen.item_key,
+                    citekey=citekey_result.citekey,
+                    issn=chosen.issn or item.get("issn") or item.get("ISSN"),
+                    abstract_note=chosen.abstract_note or item.get("abstract") or item.get("abstractNote"),
+                    citation_anchor=citekey_result.citation_anchor or f"[@{citekey_result.citekey}]",
+                    collection_name=selected_target.collection_name or selected_target.library_name,
+                    collection_key=selected_target.collection_key,
+                    library_id=selected_target.library_id,
+                    write_route="manual_metadata_connector",
+                    verification_status=fulltext_status,
+                    metadata_hygiene_status=chosen.metadata_hygiene_status,
+                    normalized_creators=chosen.normalized_creators,
+                    hygiene_warnings=chosen.hygiene_warnings,
+                    metadata_source=metadata_source,
+                    fulltext_status=fulltext_status,
+                    source_identifier=str(item.get("source_identifier") or item.get("cnki_id") or item.get("url") or ""),
+                )
+            )
+
+        statuses = {record.metadata_hygiene_status for record in results if record.metadata_hygiene_status}
+        overall_hygiene_status = "normalized" if "normalized" in statuses else "clean" if "clean" in statuses else "not_checked"
+
+        return MetadataImportReport(
+            selected_target=selected_target,
+            requested_count=len(clean_items),
+            imported_count=max(0, len(clean_items) - reused_count),
+            reused_count=reused_count,
+            write_route="manual_metadata_connector",
+            results=results,
+            metadata_hygiene_status=overall_hygiene_status,
+            hygiene_warnings=hygiene_warnings,
+        )
 
     async def import_doi_metadata_to_selected_collection(self, dois: list[str]) -> MetadataImportReport:
         normalized: list[str] = []

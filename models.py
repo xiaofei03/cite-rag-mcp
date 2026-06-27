@@ -129,6 +129,9 @@ class ImportedMetadataRecord:
     metadata_hygiene_status: str = "not_checked"
     normalized_creators: list[str] = field(default_factory=list)
     hygiene_warnings: list[str] = field(default_factory=list)
+    metadata_source: str | None = None
+    fulltext_status: str | None = None
+    source_identifier: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _to_serializable(self)

@@ -187,6 +187,7 @@ The actual prose drafting should still be done by Codex or a writing skill using
 | `lookup_existing_items_by_doi` | Find existing top-level Zotero items by DOI without writing to the library. |
 | `export_item_citekey` | Export one Zotero item to BibTeX and extract its Better BibTeX citekey. |
 | `import_doi_metadata_to_selected_collection` | Import DOI-backed metadata into the selected Zotero target. |
+| `import_manual_metadata_to_selected_collection` | Import Chinese or user-verified metadata without requiring PDF or DOI, then return Zotero citekeys. |
 | `import_dois_and_get_citekeys` | Import or reuse DOI-backed items and return citekeys. |
 | `normalize_existing_item_creators` | Detect and optionally normalize creator-name capitalization issues. |
 | `audit_zotero_metadata_by_citekeys` | Audit Zotero metadata for cited items before export. |
@@ -208,6 +209,49 @@ You need:
 Zotero must expose both endpoints:
 
 - Zotero Connector: `http://127.0.0.1:23119/connector/ping`
+
+## Chinese and Metadata-Only References
+
+Chinese journal articles, CNKI records, and locally supplied measurement references often do not have a downloaded PDF in Zotero, and their DOI metadata may be incomplete. This MCP therefore separates three concerns:
+
+- Zotero metadata import
+- full-text or abstract verification
+- live citation-field generation
+
+A downloaded PDF is recommended for writing-critical verification, but it is not required for Zotero metadata import or live citation-field generation.
+
+Use `import_manual_metadata_to_selected_collection` when the user has reliable metadata but no PDF or no resolvable DOI. The selected Zotero collection must be open and writable.
+
+Example payload:
+
+```json
+{
+  "metadata_items": [
+    {
+      "title": "人工智能如何提升企业生产效率？——基于劳动力技能结构调整的视角",
+      "authors": ["姚加权", "张锟澎", "郭李鹏", "冯绪"],
+      "journal": "管理世界",
+      "year": "2024",
+      "doi": "10.19744/j.cnki.11-1235/f.2024.0018",
+      "url": "https://doi.org/10.19744/j.cnki.11-1235/f.2024.0018",
+      "language": "zh-CN",
+      "source_identifier": "CNKI or user-provided PDF metadata"
+    }
+  ],
+  "metadata_source": "cnki_or_user_verified",
+  "fulltext_status": "metadata_only"
+}
+```
+
+Recommended `fulltext_status` values:
+
+- `metadata_only`: metadata is sufficient for a Zotero citekey and Word live citation field, but the source should not support detailed claims until manually checked.
+- `abstract_verified`: abstract or reliable summary has been checked.
+- `fulltext_verified`: full text has been checked and the item may support writing-critical measurement, theory, or methods claims.
+
+For final export audits, DOI-backed items should still use normal DOI verification where possible. If a Chinese item has no DOI but has been manually verified, call `audit_zotero_metadata_by_citekeys` with `allow_metadata_only_without_doi=true`; otherwise the audit will correctly flag `doi_missing`.
+
+Metadata-only import is not permission to fabricate claims. It only means Zotero can hold a valid item and produce a live citation field while the writing workflow separately tracks whether the source has been read deeply enough for the claim being made.
 - Zotero Local API: `http://127.0.0.1:23119/api/users/0/items`
 
 No Zotero cloud API key is required. The server talks to your local Zotero Desktop.
