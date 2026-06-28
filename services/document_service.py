@@ -31,6 +31,13 @@ class FinalWordDocumentService:
             pass
         return self.project_dir
 
+    def _resolve_output_path(self, output_filename: str | None) -> Path:
+        """Resolve output paths without assuming the process cwd is valid."""
+        raw_path = Path(output_filename or "final_paper.docx").expanduser()
+        if raw_path.is_absolute():
+            return raw_path.resolve()
+        return (self._safe_runtime_dir() / raw_path).resolve()
+
     def _sync_reference_doc_to_cwd(self) -> Path:
         cwd_template = (self._safe_runtime_dir() / "template.docx").resolve()
         canonical_template = self.reference_doc_path.resolve()
@@ -339,16 +346,13 @@ class FinalWordDocumentService:
             return {
                 "success": False,
                 "status": "error",
-                "output_path": str((Path(output_filename).expanduser() if output_filename else Path("final_paper.docx")).resolve()),
+                "output_path": str(self._resolve_output_path(output_filename)),
                 "details": "Citation syntax validation failed. Fix suppress-author citations before Word export.",
                 **validation,
             }
         markdown_content = self._sanitize_markdown_content(markdown_content)
 
-        output_path = Path(output_filename).expanduser()
-        if not output_path.is_absolute():
-            output_path = self._safe_runtime_dir() / output_path
-        output_path = output_path.resolve()
+        output_path = self._resolve_output_path(output_filename)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self.lua_filter_path.exists():

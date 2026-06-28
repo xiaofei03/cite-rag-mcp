@@ -445,6 +445,27 @@ On macOS and Windows, the installer can download a local Pandoc copy into `tools
 
 Open the generated document in Word or WPS, then use the Zotero toolbar to refresh citations or insert/update the bibliography. The MCP creates Zotero-compatible fields, but the editor may still need a refresh pass.
 
+### Word export fails with `[Errno 2] No such file or directory`
+
+This can happen if the MCP process was started from a project directory that was later moved, restored, or deleted. In that state, Python's current working directory lookup can fail before Pandoc or Zotero returns a useful error.
+
+Current versions of `cite-rag-mcp` guard against this by resolving relative export paths against the MCP repository directory when the process runtime directory is unavailable. If you still see this error:
+
+1. Restart Codex so the MCP server process reloads the latest code.
+2. Confirm Pandoc and Zotero are reachable:
+
+```bash
+python3 scripts/healthcheck.py
+```
+
+3. Run the deleted-working-directory regression test:
+
+```bash
+python3 scripts/test_document_service_runtime.py
+```
+
+4. Retry `generate_final_word_document` and inspect the output DOCX for live citation markers such as `ADDIN ZOTERO_ITEM` or `CSL_CITATION`.
+
 ## Design Philosophy
 
 `cite-rag-mcp` follows three principles:
