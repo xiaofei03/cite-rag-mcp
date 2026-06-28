@@ -21,8 +21,18 @@ class FinalWordDocumentService:
         self.lua_filter_path = self.script_dir / "zotero.lua"
         self.reference_doc_path = self.project_dir / "template.docx"
 
+    def _safe_runtime_dir(self) -> Path:
+        """Return a usable runtime directory even if the process cwd was deleted."""
+        try:
+            cwd = Path.cwd().resolve()
+            if cwd.exists():
+                return cwd
+        except FileNotFoundError:
+            pass
+        return self.project_dir
+
     def _sync_reference_doc_to_cwd(self) -> Path:
-        cwd_template = (Path.cwd() / "template.docx").resolve()
+        cwd_template = (self._safe_runtime_dir() / "template.docx").resolve()
         canonical_template = self.reference_doc_path.resolve()
         if not canonical_template.exists():
             return cwd_template
@@ -337,7 +347,7 @@ class FinalWordDocumentService:
 
         output_path = Path(output_filename).expanduser()
         if not output_path.is_absolute():
-            output_path = Path.cwd() / output_path
+            output_path = self._safe_runtime_dir() / output_path
         output_path = output_path.resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
